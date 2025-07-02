@@ -30,7 +30,6 @@ def find_best_matches(error_message, df, threshold=0.6):
         return []
     
     error_col = df.columns[0]  # First column is error messages
-    fix_col = df.columns[1]    # Second column is fix details
     
     matches = []
     error_message_lower = error_message.lower()
@@ -46,14 +45,49 @@ def find_best_matches(error_message, df, threshold=0.6):
             similarity_score = similarity(error_message, str(row[error_col]))
         
         if similarity_score >= threshold:
+            # Collect all fix columns and their data
+            fixes = []
+            priority = "Medium"  # Default priority
+            
+            # Process all columns after the first one
+            for col_idx, col_name in enumerate(df.columns[1:], 1):
+                col_value = str(row[col_name]).strip()
+                
+                # Skip empty/null values
+                if col_value and col_value.lower() not in ['nan', 'none', '']:
+                    if col_name.lower() in ['priority', 'priority_level', 'urgency']:
+                        priority = col_value
+                    elif col_name.lower() in ['primary_fix', 'main_fix', 'fix', 'solution']:
+                        fixes.insert(0, {'type': 'Primary', 'content': col_value})
+                    elif col_name.lower() in ['secondary_fix', 'alternative_fix', 'alt_fix', 'alternative']:
+                        fixes.append({'type': 'Alternative', 'content': col_value})
+                    elif col_name.lower() in ['tertiary_fix', 'additional_fix', 'extra_fix']:
+                        fixes.append({'type': 'Additional', 'content': col_value})
+                    else:
+                        # Auto-detect fix type based on column position
+                        if col_idx == 1:
+                            fixes.insert(0, {'type': 'Primary', 'content': col_value})
+                        elif col_idx == 2:
+                            fixes.append({'type': 'Alternative', 'content': col_value})
+                        elif col_idx == 3:
+                            fixes.append({'type': 'Additional', 'content': col_value})
+                        elif col_idx >= 4 and col_name.lower() not in ['priority', 'priority_level', 'urgency']:
+                            fixes.append({'type': f'Option {col_idx-1}', 'content': col_value})
+            
+            # Ensure we have at least one fix
+            if not fixes:
+                fixes = [{'type': 'Primary', 'content': 'No specific fix provided'}]
+            
             matches.append({
                 'error': row[error_col],
-                'fix': row[fix_col],
+                'fixes': fixes,
+                'priority': priority,
                 'similarity': similarity_score
             })
     
-    # Sort by similarity score (highest first)
-    matches.sort(key=lambda x: x['similarity'], reverse=True)
+    # Sort by priority first, then similarity score
+    priority_order = {'High': 3, 'Medium': 2, 'Low': 1, 'Critical': 4, 'Urgent': 4}
+    matches.sort(key=lambda x: (priority_order.get(x['priority'], 2), x['similarity']), reverse=True)
     return matches[:5]  # Return top 5 matches
 
 @app.route('/')
@@ -85,7 +119,7 @@ def upload_file():
             
             # Validate that the file has at least 2 columns
             if len(df.columns) < 2:
-                return jsonify({'error': 'File must have at least 2 columns (Error Message and Fix Details)'}), 400
+                return jsonify({'error': 'File must have at least 2 columns (Error Message and at least one Fix column)'}), 400
             
             # Store the dataframe
             uploaded_data[session_id] = df
@@ -127,15 +161,15 @@ def chat():
     else:
         if matches[0]['similarity'] >= 0.9:
             response = {
-                'message': f'Found exact match! Here\'s the recommended fix:',
+                'message': f'Found exact match! Here are the recommended solutions:',
                 'exact_match': True,
-                'fixes': [matches[0]]
+                'matches': [matches[0]]
             }
         else:
             response = {
                 'message': f'Found {len(matches)} similar error(s). Here are the closest matches:',
                 'exact_match': False,
-                'fixes': matches
+                'matches': matches
             }
     
     return jsonify(response)

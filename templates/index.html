@@ -197,6 +197,74 @@
             margin-left: 10px;
         }
 
+        .priority-badge {
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 11px;
+            margin-left: 10px;
+            font-weight: bold;
+        }
+
+        .priority-critical, .priority-urgent {
+            background: #ffe6e6;
+            color: #dc3545;
+        }
+
+        .priority-high {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .priority-medium {
+            background: #fff9e6;
+            color: #b8860b;
+        }
+
+        .priority-low {
+            background: #e6ffe6;
+            color: #28a745;
+        }
+
+        .fixes-container {
+            margin-top: 10px;
+        }
+
+        .fix-solution {
+            background: #f8f9fa;
+            border-left: 4px solid #007bff;
+            margin: 8px 0;
+            padding: 12px;
+            border-radius: 0 8px 8px 0;
+        }
+
+        .fix-solution:nth-child(2) {
+            border-left-color: #28a745;
+        }
+
+        .fix-solution:nth-child(3) {
+            border-left-color: #ffc107;
+        }
+
+        .fix-solution:nth-child(4) {
+            border-left-color: #17a2b8;
+        }
+
+        .fix-solution:nth-child(5) {
+            border-left-color: #6f42c1;
+        }
+
+        .fix-type-header {
+            color: #495057;
+            margin-bottom: 6px;
+            font-size: 13px;
+        }
+
+        .fix-content {
+            color: #495057;
+            line-height: 1.5;
+            font-size: 14px;
+        }
+
         .chat-input-section {
             padding: 20px;
             background: white;
@@ -341,7 +409,16 @@
             <div class="welcome-message">
                 👋 Welcome! Please upload your error database (CSV/Excel) to start getting fix suggestions for your bootcode verification errors.
                 <br><br>
-                <strong>File Format:</strong> First column = Error Messages, Second column = Fix Details
+                <strong>Enhanced File Format:</strong>
+                <ul style="text-align: left; display: inline-block; margin: 10px 0;">
+                    <li>Column 1: Error Messages</li>
+                    <li>Column 2: Primary Fix</li>
+                    <li>Column 3: Alternative Fix (optional)</li>
+                    <li>Column 4: Additional Fix (optional)</li>
+                    <li>Column 5: Priority Level (optional)</li>
+                </ul>
+                <br>
+                <strong>Priority Levels:</strong> Critical, High, Medium, Low
             </div>
         </div>
 
@@ -483,21 +560,40 @@
             
             let html = `<div>${response.message}</div>`;
             
-            if (response.fixes && response.fixes.length > 0) {
-                response.fixes.forEach((fix, index) => {
-                    const similarityPercent = Math.round(fix.similarity * 100);
+            if (response.matches && response.matches.length > 0) {
+                response.matches.forEach((match, index) => {
+                    const similarityPercent = Math.round(match.similarity * 100);
+                    const priorityIcon = getPriorityIcon(match.priority);
+                    const priorityClass = getPriorityClass(match.priority);
+                    
                     html += `
                         <div class="fix-item">
                             <div class="fix-header">
                                 🔍 Error Match ${index + 1}
                                 <span class="similarity-score">${similarityPercent}% match</span>
+                                <span class="priority-badge ${priorityClass}">${priorityIcon} ${match.priority}</span>
                             </div>
                             <div style="margin: 8px 0; font-size: 13px; color: #666; font-style: italic;">
-                                "${fix.error}"
+                                "${match.error}"
                             </div>
-                            <div class="fix-content">
-                                <strong>💡 Recommended Fix:</strong><br>
-                                ${fix.fix}
+                            <div class="fixes-container">
+                    `;
+                    
+                    match.fixes.forEach((fix, fixIndex) => {
+                        const fixIcon = getFixIcon(fix.type);
+                        html += `
+                            <div class="fix-solution">
+                                <div class="fix-type-header">
+                                    ${fixIcon} <strong>${fix.type} Solution:</strong>
+                                </div>
+                                <div class="fix-content">
+                                    ${fix.content}
+                                </div>
+                            </div>
+                        `;
+                    });
+                    
+                    html += `
                             </div>
                         </div>
                     `;
@@ -515,6 +611,35 @@
             messageDiv.innerHTML = html;
             chatMessages.appendChild(messageDiv);
             scrollToBottom();
+        }
+
+        function getPriorityIcon(priority) {
+            const icons = {
+                'Critical': '🔴',
+                'Urgent': '🔴',
+                'High': '🟠',
+                'Medium': '🟡',
+                'Low': '🟢'
+            };
+            return icons[priority] || '🟡';
+        }
+
+        function getPriorityClass(priority) {
+            return `priority-${priority.toLowerCase()}`;
+        }
+
+        function getFixIcon(type) {
+            const icons = {
+                'Primary': '🎯',
+                'Alternative': '🔄',
+                'Additional': '➕',
+                'Option 1': '1️⃣',
+                'Option 2': '2️⃣',
+                'Option 3': '3️⃣',
+                'Option 4': '4️⃣',
+                'Option 5': '5️⃣'
+            };
+            return icons[type] || '💡';
         }
 
         function showTyping() {
