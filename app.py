@@ -1,4 +1,4 @@
-THIS SHOULD BE A LINTER ERRORfrom flask import Flask, render_template, request, jsonify, session
+from flask import Flask, render_template, request, jsonify, session
 import pandas as pd
 import os
 from werkzeug.utils import secure_filename
@@ -6,6 +6,9 @@ import uuid
 from difflib import SequenceMatcher
 import re
 from collections import defaultdict
+import logging
+from datetime import datetime
+import json
 
 app = Flask(__name__)
 app.secret_key = 'bootcode_verification_secret_key'
@@ -17,6 +20,21 @@ os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 # Store uploaded data in memory (in production, use a database)
 uploaded_data = {}
+# Store conversation context for follow-up questions
+conversation_context = {}
+# Store unmatched errors for dataset improvement
+unmatched_errors = []
+
+# Setup logging for unmatched errors
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('unmatched_errors.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in {'csv', 'xls', 'xlsx'}
@@ -167,6 +185,77 @@ def generate_follow_up_question(matches, original_message):
         }
     
     return None
+
+def log_unmatched_error(error_message, session_id, user_context=None):
+    """Log unmatched error messages for dataset improvement"""
+    timestamp = datetime.now().isoformat()
+    
+    error_entry = {
+        'timestamp': timestamp,
+        'error_message': error_message,
+        'session_id': session_id,
+        'user_context': user_context
+    }
+    
+    # Add to in-memory list
+    unmatched_errors.append(error_entry)
+    
+    # Log to file
+    logger.info(f"UNMATCHED_ERROR: {json.dumps(error_entry)}")
+    
+    # Keep only last 100 unmatched errors in memory
+    if len(unmatched_errors) > 100:
+        unmatched_errors.pop(0)
+
+def generate_improvement_suggestions(error_message):
+    """Generate suggestions for improving the dataset"""
+    suggestions = []
+    
+    # Analyze the error message to provide contextual suggestions
+    keywords = extract_keywords(error_message)
+    error_lower = error_message.lower()
+    
+    if not keywords:
+        suggestions.append("Try using more specific technical terms related to boot processes")
+        suggestions.append("Include error codes or specific component names if available")
+    
+    if len(error_message.split()) < 3:
+        suggestions.append("Provide more detailed description of when this error occurs")
+        suggestions.append("Include any error codes or system information")
+    
+    # Specific suggestions based on content
+    if any(term in error_lower for term in ['boot', 'startup', 'start']):
+        suggestions.append("Specify the boot stage: BIOS/UEFI, bootloader, or OS loading")
+        suggestions.append("Mention if this happens on cold boot, warm restart, or both")
+    
+    if any(term in error_lower for term in ['error', 'fail']):
+        suggestions.append("Include the exact error message or code if displayed")
+        suggestions.append("Describe what happens: system freezes, restarts, or shows error screen")
+    
+    # General improvement suggestions
+    suggestions.extend([
+        "Consider adding this error to your database with a detailed fix description",
+        "Check if there are similar errors in your database that might help",
+        "Document the system configuration where this error occurs"
+    ])
+    
+    return suggestions[:6]  # Return max 6 suggestions
+
+def generate_database_entry_template(error_message):
+    """Generate a template for adding new entries to the database"""
+    template = {
+        'error_message': error_message,
+        'primary_fix': '[Please provide the main solution for this error]',
+        'alternative_fix': '[Optional: Provide an alternative solution]',
+        'additional_fix': '[Optional: Provide additional troubleshooting steps]',
+        'priority': '[High/Medium/Low - Set priority level]',
+        'category': determine_error_category(extract_keywords(error_message)),
+        'suggested_format': {
+            'csv_row': f'"{error_message}","[Primary Fix]","[Alternative Fix]","[Additional Fix]","Medium"',
+            'excel_columns': ['Error Message', 'Primary Fix', 'Alternative Fix', 'Additional Fix', 'Priority']
+        }
+    }
+    return template
 
 def find_best_matches(error_message, df, threshold=0.6):
     """Find best matching error messages in the dataframe"""
