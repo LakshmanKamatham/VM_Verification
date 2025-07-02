@@ -1,10 +1,11 @@
-from flask import Flask, render_template, request, jsonify, session
+THIS SHOULD BE A LINTER ERRORfrom flask import Flask, render_template, request, jsonify, session
 import pandas as pd
 import os
 from werkzeug.utils import secure_filename
 import uuid
 from difflib import SequenceMatcher
 import re
+from collections import defaultdict
 
 app = Flask(__name__)
 app.secret_key = 'bootcode_verification_secret_key'
@@ -23,6 +24,149 @@ def allowed_file(filename):
 def similarity(a, b):
     """Calculate similarity between two strings"""
     return SequenceMatcher(None, a.lower(), b.lower()).ratio()
+
+def extract_keywords(text):
+    """Extract meaningful keywords from error message"""
+    # Common bootcode-related keywords
+    keywords = []
+    text_lower = text.lower()
+    
+    # Boot-related terms
+    boot_terms = ['boot', 'bios', 'uefi', 'mbr', 'gpt', 'bootloader', 'grub', 'ntldr', 'bootmgr']
+    hardware_terms = ['memory', 'ram', 'cpu', 'disk', 'drive', 'ssd', 'hdd', 'tpm', 'secure']
+    error_terms = ['error', 'failure', 'failed', 'missing', 'corrupt', 'invalid', 'timeout', 'panic']
+    
+    for term in boot_terms + hardware_terms + error_terms:
+        if term in text_lower:
+            keywords.append(term)
+    
+    return keywords
+
+def is_ambiguous_query(matches, original_message):
+    """Determine if the query is ambiguous and needs clarification"""
+    if len(matches) < 2:
+        return False
+    
+    # Check if top matches have similar similarity scores but different keywords
+    top_matches = matches[:3]  # Look at top 3 matches
+    similarity_threshold = 0.15  # If similarity scores are within 15% of each other
+    
+    # Group matches by similarity score ranges
+    score_groups = []
+    for match in top_matches:
+        added_to_group = False
+        for group in score_groups:
+            if abs(group[0]['similarity'] - match['similarity']) <= similarity_threshold:
+                group.append(match)
+                added_to_group = True
+                break
+        if not added_to_group:
+            score_groups.append([match])
+    
+    # If we have multiple matches with similar scores
+    if len(score_groups) > 0 and len(score_groups[0]) >= 2:
+        # Check if they represent different error categories
+        error_categories = set()
+        for match in score_groups[0]:
+            keywords = extract_keywords(match['error'])
+            category = determine_error_category(keywords)
+            error_categories.add(category)
+        
+        # If different categories, it's ambiguous
+        if len(error_categories) > 1:
+            return True
+    
+    # Check if the original message is too generic
+    original_keywords = extract_keywords(original_message)
+    if len(original_keywords) <= 2 and len(matches) >= 3:
+        return True
+    
+    return False
+
+def determine_error_category(keywords):
+    """Categorize error based on keywords"""
+    if any(term in keywords for term in ['memory', 'ram']):
+        return 'memory'
+    elif any(term in keywords for term in ['disk', 'drive', 'ssd', 'hdd', 'mbr', 'gpt']):
+        return 'storage'
+    elif any(term in keywords for term in ['boot', 'bootloader', 'grub', 'ntldr', 'bootmgr']):
+        return 'bootloader'
+    elif any(term in keywords for term in ['bios', 'uefi', 'tpm', 'secure']):
+        return 'firmware'
+    elif any(term in keywords for term in ['cpu']):
+        return 'processor'
+    else:
+        return 'general'
+
+def generate_follow_up_question(matches, original_message):
+    """Generate intelligent follow-up questions based on matches"""
+    if len(matches) < 2:
+        return None
+    
+    # Analyze the matches to create targeted questions
+    categories = defaultdict(list)
+    for match in matches[:5]:  # Look at top 5 matches
+        keywords = extract_keywords(match['error'])
+        category = determine_error_category(keywords)
+        categories[category].append(match)
+    
+    # Generate questions based on categories
+    if len(categories) > 1:
+        category_options = []
+        category_names = {
+            'memory': 'Memory/RAM related',
+            'storage': 'Hard drive/Storage related', 
+            'bootloader': 'Boot loader/Boot manager related',
+            'firmware': 'BIOS/UEFI/Firmware related',
+            'processor': 'CPU/Processor related',
+            'general': 'General system'
+        }
+        
+        for category, matches_in_category in categories.items():
+            if len(matches_in_category) > 0:
+                example = matches_in_category[0]['error']
+                category_display = category_names.get(category, category.title())
+                category_options.append({
+                    'category': category,
+                    'display_name': category_display,
+                    'example': example,
+                    'count': len(matches_in_category)
+                })
+        
+        if len(category_options) >= 2:
+            question = "I found multiple types of errors that might match your description. Could you help me narrow it down?\n\n"
+            
+            for i, option in enumerate(category_options[:4], 1):  # Show max 4 options
+                question += f"{i}. **{option['display_name']}** ({option['count']} match{'es' if option['count'] > 1 else ''})\n"
+                question += f"   Example: \"{option['example']}\"\n\n"
+            
+            question += "Please type the number or describe which type of error you're experiencing."
+            
+            return {
+                'question': question,
+                'type': 'category_selection',
+                'options': category_options,
+                'original_matches': matches
+            }
+    
+    # If same category but different specific errors
+    elif len(matches) >= 3:
+        question = "I found several similar errors. Could you provide more details?\n\n"
+        
+        for i, match in enumerate(matches[:4], 1):
+            similarity_percent = int(match['similarity'] * 100)
+            question += f"{i}. \"{match['error']}\" ({similarity_percent}% match)\n"
+        
+        question += f"\nPlease type the number of the closest match, or provide more specific details about your error."
+        
+        return {
+            'question': question,
+            'type': 'specific_selection',
+            'options': matches[:4],
+            'original_matches': matches
+        }
+    
+    return None
 
 def find_best_matches(error_message, df, threshold=0.6):
     """Find best matching error messages in the dataframe"""
