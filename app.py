@@ -1,5 +1,5 @@
 from flask import Flask, render_template, request, jsonify, session
-import pandas as pd
+import csv
 import os
 from werkzeug.utils import secure_filename
 import uuid
@@ -9,6 +9,7 @@ from collections import defaultdict
 import logging
 from datetime import datetime
 import json
+import io
 
 app = Flask(__name__)
 app.secret_key = 'bootcode_verification_secret_key'
@@ -257,25 +258,59 @@ def generate_database_entry_template(error_message):
     }
     return template
 
-def find_best_matches(error_message, df, threshold=0.6):
-    """Find best matching error messages in the dataframe"""
-    if df.empty or len(df) == 0:
+def read_file_data(file):
+    """Read CSV or Excel file and return data as list of dictionaries"""
+    try:
+        if file.filename.lower().endswith('.csv'):
+            # Read CSV file
+            content = file.read().decode('utf-8')
+            csv_reader = csv.DictReader(io.StringIO(content))
+            data = list(csv_reader)
+            columns = csv_reader.fieldnames
+        else:
+            # Read Excel file
+            from openpyxl import load_workbook
+            workbook = load_workbook(file)
+            sheet = workbook.active
+            
+            # Get headers from first row
+            columns = [cell.value for cell in sheet[1]]
+            
+            # Get data rows
+            data = []
+            for row in sheet.iter_rows(min_row=2, values_only=True):
+                if any(cell is not None for cell in row):  # Skip empty rows
+                    row_dict = {}
+                    for i, value in enumerate(row):
+                        if i < len(columns) and columns[i]:
+                            row_dict[columns[i]] = value if value is not None else ''
+                    data.append(row_dict)
+        
+        return data, columns
+    except Exception as e:
+        raise Exception(f"Error reading file: {str(e)}")
+
+def find_best_matches(error_message, data, threshold=0.6):
+    """Find best matching error messages in the data"""
+    if not data or len(data) == 0:
         return []
     
-    error_col = df.columns[0]  # First column is error messages
+    # Get column names (first column is error messages)
+    columns = list(data[0].keys())
+    error_col = columns[0]
     
     matches = []
     error_message_lower = error_message.lower()
     
-    for idx, row in df.iterrows():
-        stored_error = str(row[error_col]).lower()
+    for row in data:
+        stored_error = str(row.get(error_col, '')).lower()
         
         # Check for exact substring match first
         if error_message_lower in stored_error or stored_error in error_message_lower:
             similarity_score = 1.0
         else:
             # Calculate similarity score
-            similarity_score = similarity(error_message, str(row[error_col]))
+            similarity_score = similarity(error_message, str(row.get(error_col, '')))
         
         if similarity_score >= threshold:
             # Collect all fix columns and their data
@@ -283,36 +318,37 @@ def find_best_matches(error_message, df, threshold=0.6):
             priority = "Medium"  # Default priority
             
             # Process all columns after the first one
-            for col_idx, col_name in enumerate(df.columns[1:], 1):
-                col_value = str(row[col_name]).strip()
-                
-                # Skip empty/null values
-                if col_value and col_value.lower() not in ['nan', 'none', '']:
-                    if col_name.lower() in ['priority', 'priority_level', 'urgency']:
-                        priority = col_value
-                    elif col_name.lower() in ['primary_fix', 'main_fix', 'fix', 'solution']:
-                        fixes.insert(0, {'type': 'Primary', 'content': col_value})
-                    elif col_name.lower() in ['secondary_fix', 'alternative_fix', 'alt_fix', 'alternative']:
-                        fixes.append({'type': 'Alternative', 'content': col_value})
-                    elif col_name.lower() in ['tertiary_fix', 'additional_fix', 'extra_fix']:
-                        fixes.append({'type': 'Additional', 'content': col_value})
-                    else:
-                        # Auto-detect fix type based on column position
-                        if col_idx == 1:
+            for col_idx, col_name in enumerate(columns[1:], 1):
+                if col_name in row:
+                    col_value = str(row[col_name]).strip()
+                    
+                    # Skip empty/null values
+                    if col_value and col_value.lower() not in ['nan', 'none', '', 'null']:
+                        if col_name.lower() in ['priority', 'priority_level', 'urgency']:
+                            priority = col_value
+                        elif col_name.lower() in ['primary_fix', 'main_fix', 'fix', 'solution']:
                             fixes.insert(0, {'type': 'Primary', 'content': col_value})
-                        elif col_idx == 2:
+                        elif col_name.lower() in ['secondary_fix', 'alternative_fix', 'alt_fix', 'alternative']:
                             fixes.append({'type': 'Alternative', 'content': col_value})
-                        elif col_idx == 3:
+                        elif col_name.lower() in ['tertiary_fix', 'additional_fix', 'extra_fix']:
                             fixes.append({'type': 'Additional', 'content': col_value})
-                        elif col_idx >= 4 and col_name.lower() not in ['priority', 'priority_level', 'urgency']:
-                            fixes.append({'type': f'Option {col_idx-1}', 'content': col_value})
+                        else:
+                            # Auto-detect fix type based on column position
+                            if col_idx == 1:
+                                fixes.insert(0, {'type': 'Primary', 'content': col_value})
+                            elif col_idx == 2:
+                                fixes.append({'type': 'Alternative', 'content': col_value})
+                            elif col_idx == 3:
+                                fixes.append({'type': 'Additional', 'content': col_value})
+                            elif col_idx >= 4 and col_name.lower() not in ['priority', 'priority_level', 'urgency']:
+                                fixes.append({'type': f'Option {col_idx-1}', 'content': col_value})
             
             # Ensure we have at least one fix
             if not fixes:
                 fixes = [{'type': 'Primary', 'content': 'No specific fix provided'}]
             
             matches.append({
-                'error': row[error_col],
+                'error': row.get(error_col, ''),
                 'fixes': fixes,
                 'priority': priority,
                 'similarity': similarity_score
@@ -344,24 +380,21 @@ def upload_file():
             
             session_id = session['session_id']
             
-            # Read the file based on extension
-            if file.filename.lower().endswith('.csv'):
-                df = pd.read_csv(file)
-            else:  # Excel files
-                df = pd.read_excel(file)
+            # Read the file data
+            data, columns = read_file_data(file)
             
             # Validate that the file has at least 2 columns
-            if len(df.columns) < 2:
+            if len(columns) < 2:
                 return jsonify({'error': 'File must have at least 2 columns (Error Message and at least one Fix column)'}), 400
             
-            # Store the dataframe
-            uploaded_data[session_id] = df
+            # Store the data
+            uploaded_data[session_id] = data
             
             return jsonify({
                 'success': True, 
-                'message': f'File uploaded successfully! Found {len(df)} error records.',
-                'columns': list(df.columns),
-                'sample_data': df.head(3).to_dict('records')
+                'message': f'File uploaded successfully! Found {len(data)} error records.',
+                'columns': list(columns),
+                'sample_data': data[:3] if len(data) >= 3 else data
             })
             
         except Exception as e:
@@ -371,8 +404,8 @@ def upload_file():
 
 @app.route('/chat', methods=['POST'])
 def chat():
-    data = request.get_json()
-    message = data.get('message', '').strip()
+    request_data = request.get_json()
+    message = request_data.get('message', '').strip()
     
     if not message:
         return jsonify({'error': 'Please enter an error message'}), 400
@@ -381,15 +414,24 @@ def chat():
     if not session_id or session_id not in uploaded_data:
         return jsonify({'error': 'Please upload a file first'}), 400
     
-    df = uploaded_data[session_id]
+    data = uploaded_data[session_id]
     
     # Find matching errors
-    matches = find_best_matches(message, df)
+    matches = find_best_matches(message, data)
     
     if not matches:
+        # Log unmatched error for dataset improvement
+        log_unmatched_error(message, session_id)
+        
+        # Generate improvement suggestions
+        improvement_suggestions = generate_improvement_suggestions(message)
+        template = generate_database_entry_template(message)
+        
         response = {
             'message': 'No matching errors found in the uploaded data.',
-            'suggestions': ['Try rephrasing your error message', 'Check for typos', 'Upload a more comprehensive error database']
+            'suggestions': improvement_suggestions,
+            'unmatched': True,
+            'database_template': template
         }
     else:
         if matches[0]['similarity'] >= 0.9:
@@ -399,10 +441,16 @@ def chat():
                 'matches': [matches[0]]
             }
         else:
+            # Check if query is ambiguous and needs follow-up
+            follow_up = None
+            if is_ambiguous_query(matches, message):
+                follow_up = generate_follow_up_question(matches, message)
+            
             response = {
                 'message': f'Found {len(matches)} similar error(s). Here are the closest matches:',
                 'exact_match': False,
-                'matches': matches
+                'matches': matches,
+                'follow_up': follow_up
             }
     
     return jsonify(response)
@@ -414,6 +462,45 @@ def clear_session():
         del uploaded_data[session_id]
     session.clear()
     return jsonify({'success': True, 'message': 'Session cleared successfully'})
+
+@app.route('/unmatched-errors', methods=['GET'])
+def get_unmatched_errors():
+    """Get list of unmatched errors for dataset improvement"""
+    return jsonify({
+        'unmatched_errors': unmatched_errors[-20:],  # Return last 20 unmatched errors
+        'total_count': len(unmatched_errors)
+    })
+
+@app.route('/download-unmatched', methods=['GET'])
+def download_unmatched_errors():
+    """Download unmatched errors as CSV for dataset improvement"""
+    try:
+        output = io.StringIO()
+        writer = csv.writer(output)
+        
+        # Write header
+        writer.writerow(['Timestamp', 'Error Message', 'Suggested Primary Fix', 'Suggested Alternative Fix', 'Priority'])
+        
+        # Write unmatched errors with suggested template
+        for error_entry in unmatched_errors:
+            writer.writerow([
+                error_entry['timestamp'],
+                error_entry['error_message'],
+                '[Please provide the main solution for this error]',
+                '[Optional: Provide an alternative solution]',
+                'Medium'
+            ])
+        
+        output.seek(0)
+        response = Flask.response_class(
+            output.getvalue(),
+            mimetype='text/csv',
+            headers={"Content-disposition": "attachment; filename=unmatched_errors.csv"}
+        )
+        return response
+    
+    except Exception as e:
+        return jsonify({'error': f'Error generating download: {str(e)}'}), 400
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
