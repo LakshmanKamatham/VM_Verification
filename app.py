@@ -26,16 +26,21 @@ conversation_context = {}
 # Store unmatched errors for dataset improvement
 unmatched_errors = []
 
-# Setup logging for unmatched errors
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('unmatched_errors.log'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
+# Setup simplified logging for unmatched errors
+try:
+    logging.basicConfig(
+        level=logging.WARNING,  # Reduced logging level
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler('unmatched_errors.log', encoding='utf-8'),
+        ]
+    )
+    logger = logging.getLogger(__name__)
+except Exception as e:
+    # Fallback to basic logging if file logging fails
+    logging.basicConfig(level=logging.ERROR)
+    logger = logging.getLogger(__name__)
+    print(f"⚠️ Warning: Logging setup had issues: {e}")
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in {'csv', 'xls', 'xlsx'}
@@ -370,17 +375,104 @@ def find_best_matches(error_message, data, threshold=0.6):
 def index():
     try:
         return render_template('index.html')
-    except UnicodeDecodeError as e:
-        # Handle encoding issues with template
-        logger.error(f"Template encoding error: {e}")
-        return """
-        <html><head><title>Bootcode Verification Chatbot</title></head>
-        <body style="font-family: Arial; padding: 20px; text-align: center;">
-        <h1>🔧 Bootcode Verification Chatbot</h1>
-        <p>Template encoding error detected. Please refresh the page.</p>
-        <p><a href="/">Refresh Page</a></p>
-        </body></html>
-        """, 500
+    except Exception as e:
+        # Handle any template loading issues
+        error_type = type(e).__name__
+        print(f"⚠️ Template error ({error_type}): {e}")
+        
+        # Fallback HTML with basic functionality
+        fallback_html = '''
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Bootcode Verification Chatbot</title>
+            <style>
+                body { font-family: Arial, sans-serif; margin: 40px; background: #f5f5f5; }
+                .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; }
+                .header { text-align: center; color: #333; margin-bottom: 30px; }
+                .upload-section { margin: 20px 0; padding: 20px; background: #f8f9fa; border-radius: 5px; }
+                .chat-area { min-height: 300px; border: 1px solid #ddd; padding: 20px; margin: 20px 0; }
+                input[type="file"], input[type="text"], button { padding: 10px; margin: 5px; }
+                .send-btn { background: #007bff; color: white; border: none; border-radius: 5px; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>🔧 Bootcode Verification Chatbot</h1>
+                    <p>Fallback mode - Basic functionality available</p>
+                </div>
+                <div class="upload-section">
+                    <label for="file">Upload Error Database (CSV/Excel):</label><br>
+                    <input type="file" id="file" accept=".csv,.xls,.xlsx">
+                    <div id="status"></div>
+                </div>
+                <div class="chat-area" id="chat"></div>
+                <div>
+                    <input type="text" id="message" placeholder="Enter error message..." disabled style="width: 70%;">
+                    <button class="send-btn" id="send" disabled onclick="sendMessage()">Send</button>
+                </div>
+            </div>
+            <script>
+                let fileUploaded = false;
+                document.getElementById('file').onchange = async function(e) {
+                    const file = e.target.files[0];
+                    if (!file) return;
+                    const formData = new FormData();
+                    formData.append('file', file);
+                    try {
+                        const response = await fetch('/upload', { method: 'POST', body: formData });
+                        const result = await response.json();
+                        if (result.success) {
+                            document.getElementById('status').innerHTML = '✅ ' + result.message;
+                            document.getElementById('message').disabled = false;
+                            document.getElementById('send').disabled = false;
+                            fileUploaded = true;
+                        } else {
+                            document.getElementById('status').innerHTML = '❌ ' + result.error;
+                        }
+                    } catch (error) {
+                        document.getElementById('status').innerHTML = '❌ Upload failed';
+                    }
+                };
+                async function sendMessage() {
+                    const message = document.getElementById('message').value.trim();
+                    if (!message || !fileUploaded) return;
+                    document.getElementById('chat').innerHTML += '<div><strong>You:</strong> ' + message + '</div>';
+                    document.getElementById('message').value = '';
+                    try {
+                        const response = await fetch('/chat', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ message: message })
+                        });
+                        const result = await response.json();
+                        let botResponse = '<div><strong>Bot:</strong> ' + result.message + '</div>';
+                        if (result.matches) {
+                            result.matches.forEach(match => {
+                                botResponse += '<div style="margin: 10px 0; padding: 10px; border: 1px solid #ddd;">';
+                                botResponse += '<strong>Error:</strong> ' + match.error + '<br>';
+                                match.fixes.forEach(fix => {
+                                    botResponse += '<strong>' + fix.type + ':</strong> ' + fix.content + '<br>';
+                                });
+                                botResponse += '</div>';
+                            });
+                        }
+                        document.getElementById('chat').innerHTML += botResponse;
+                    } catch (error) {
+                        document.getElementById('chat').innerHTML += '<div><strong>Bot:</strong> Error occurred</div>';
+                    }
+                }
+                document.getElementById('message').onkeypress = function(e) {
+                    if (e.key === 'Enter') sendMessage();
+                };
+            </script>
+        </body>
+        </html>
+        '''
+        return fallback_html
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
@@ -522,4 +614,33 @@ def download_unmatched_errors():
         return jsonify({'error': f'Error generating download: {str(e)}'}), 400
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    import socket
+    
+    def find_free_port():
+        """Find a free port to avoid 'Address already in use' errors"""
+        for port in [5000, 8080, 8000, 3000, 9000]:
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.bind(('localhost', port))
+                    return port
+            except OSError:
+                continue
+        return 5001  # Fallback port
+    
+    port = find_free_port()
+    print("🚀 Starting Bootcode Verification Chatbot...")
+    print(f"📍 Access at: http://localhost:{port}")
+    print("🔧 Enhanced version with Unicode fixes and error handling")
+    print("=" * 60)
+    
+    try:
+        app.run(debug=False, host='0.0.0.0', port=port, use_reloader=False)
+    except Exception as e:
+        print(f"❌ Error starting server: {e}")
+        print("💡 Try running with a different port or check for conflicts")
+        print("🔧 Attempting to start on fallback port 9999...")
+        try:
+            app.run(debug=False, host='0.0.0.0', port=9999, use_reloader=False)
+        except Exception as e2:
+            print(f"❌ Fallback failed: {e2}")
+            print("🚨 Please check system configuration and try again")
