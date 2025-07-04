@@ -156,7 +156,8 @@ def generate_follow_up_question(matches, original_message):
             question = "I found multiple types of errors that might match your description. Could you help me narrow it down?\n\n"
             
             for i, option in enumerate(category_options[:4], 1):  # Show max 4 options
-                question += f"{i}. **{option['display_name']}** ({option['count']} match{'es' if option['count'] > 1 else ''})\n"
+                match_text = "matches" if option["count"] > 1 else "match"
+                question += f"{i}. **{option['display_name']}** ({option['count']} {match_text})\n"
                 question += f"   Example: \"{option['example']}\"\n\n"
             
             question += "Please type the number or describe which type of error you're experiencing."
