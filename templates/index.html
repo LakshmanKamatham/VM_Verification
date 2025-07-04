@@ -487,17 +487,46 @@
             const file = e.target.files[0];
             if (!file) return;
 
+            // Validate file before upload
+            const maxSize = 16 * 1024 * 1024; // 16MB
+            if (file.size > maxSize) {
+                uploadStatus.innerHTML = '<div class="upload-error">❌ File too large. Maximum size is 16MB.</div>';
+                return;
+            }
+
+            const allowedTypes = ['text/csv', 'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'];
+            const allowedExtensions = ['.csv', '.xls', '.xlsx'];
+            const hasValidExtension = allowedExtensions.some(ext => file.name.toLowerCase().endsWith(ext));
+            
+            if (!hasValidExtension) {
+                uploadStatus.innerHTML = '<div class="upload-error">❌ Invalid file type. Please use CSV, XLS, or XLSX files.</div>';
+                return;
+            }
+
             fileName.textContent = file.name;
-            uploadStatus.innerHTML = '<div style="color: #007bff;">Uploading...</div>';
+            uploadStatus.innerHTML = '<div style="color: #007bff;">📤 Uploading...</div>';
 
             const formData = new FormData();
             formData.append('file', file);
 
+            // Create abort controller for timeout
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => {
+                controller.abort();
+            }, 30000); // 30 second timeout
+
             try {
                 const response = await fetch('/upload', {
                     method: 'POST',
-                    body: formData
+                    body: formData,
+                    signal: controller.signal
                 });
+
+                clearTimeout(timeoutId);
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
 
                 const result = await response.json();
 
@@ -519,7 +548,19 @@
                     fileUploaded = false;
                 }
             } catch (error) {
-                uploadStatus.innerHTML = '<div class="upload-error">❌ Upload failed. Please try again.</div>';
+                clearTimeout(timeoutId);
+                console.error('Upload error:', error);
+                
+                let errorMessage = '❌ Upload failed. ';
+                if (error.name === 'AbortError') {
+                    errorMessage += 'Request timed out after 30 seconds.';
+                } else if (error.message.includes('NetworkError') || error.message.includes('Failed to fetch')) {
+                    errorMessage += 'Network error. Check server connection.';
+                } else {
+                    errorMessage += error.message || 'Please try again.';
+                }
+                
+                uploadStatus.innerHTML = `<div class="upload-error">${errorMessage}</div>`;
                 fileUploaded = false;
             }
         });

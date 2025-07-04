@@ -267,39 +267,90 @@ def generate_database_entry_template(error_message):
 def read_file_data(file):
     """Read CSV or Excel file and return data as list of dictionaries"""
     try:
-        if file.filename.lower().endswith('.csv'):
+        filename = file.filename.lower()
+        print(f"📖 Processing file: {filename}")
+        
+        if filename.endswith('.csv'):
+            print("📄 Reading CSV file...")
             # Read CSV file with encoding detection
             try:
                 content = file.read().decode('utf-8')
-            except UnicodeDecodeError:
+                print("✅ UTF-8 encoding successful")
+            except UnicodeDecodeError as e:
+                print(f"⚠️ UTF-8 failed ({e}), trying latin-1...")
                 file.seek(0)  # Reset file pointer
-                content = file.read().decode('latin-1')
+                try:
+                    content = file.read().decode('latin-1')
+                    print("✅ Latin-1 encoding successful")
+                except UnicodeDecodeError:
+                    print("❌ Trying cp1252...")
+                    file.seek(0)
+                    content = file.read().decode('cp1252', errors='replace')
+                    print("✅ CP1252 encoding with replacement")
             
+            # Parse CSV
             csv_reader = csv.DictReader(io.StringIO(content))
-            data = list(csv_reader)
+            data = []
             columns = list(csv_reader.fieldnames) if csv_reader.fieldnames else []
+            print(f"📋 CSV columns detected: {columns}")
+            
+            for row_num, row in enumerate(csv_reader, 1):
+                if any(value and str(value).strip() for value in row.values()):  # Skip empty rows
+                    data.append(row)
+                if row_num > 1000:  # Limit to prevent memory issues
+                    print("⚠️ Limiting to first 1000 rows")
+                    break
+                    
         else:
+            print("📊 Reading Excel file...")
+            # Check if openpyxl is available
+            try:
+                from openpyxl import load_workbook
+            except ImportError:
+                raise ImportError("openpyxl is required for Excel files. Please install it with: pip install openpyxl")
+            
             # Read Excel file
-            from openpyxl import load_workbook
-            workbook = load_workbook(file)
-            sheet = workbook.active
+            try:
+                workbook = load_workbook(file, read_only=True)
+                sheet = workbook.active
+                print(f"📊 Excel sheet loaded: {sheet.title}")
+            except Exception as e:
+                raise Exception(f"Cannot read Excel file: {str(e)}")
             
             # Get headers from first row
-            columns = [str(cell.value) if cell.value is not None else f'Column_{i+1}' 
-                      for i, cell in enumerate(sheet[1])]
+            first_row = next(sheet.iter_rows(min_row=1, max_row=1, values_only=True), None)
+            if not first_row:
+                raise Exception("Excel file appears to be empty")
+                
+            columns = [str(cell).strip() if cell is not None else f'Column_{i+1}' 
+                      for i, cell in enumerate(first_row)]
+            print(f"📋 Excel columns detected: {columns}")
             
             # Get data rows
             data = []
-            for row in sheet.iter_rows(min_row=2, values_only=True):
-                if any(cell is not None for cell in row):  # Skip empty rows
+            for row_num, row in enumerate(sheet.iter_rows(min_row=2, values_only=True), 1):
+                if any(cell is not None and str(cell).strip() for cell in row):  # Skip empty rows
                     row_dict = {}
                     for i, value in enumerate(row):
-                        if i < len(columns) and columns[i]:
-                            row_dict[columns[i]] = str(value) if value is not None else ''
+                        if i < len(columns):
+                            row_dict[columns[i]] = str(value).strip() if value is not None else ''
                     data.append(row_dict)
+                if row_num > 1000:  # Limit to prevent memory issues
+                    print("⚠️ Limiting to first 1000 rows")
+                    break
         
+        print(f"✅ File processed: {len(data)} data rows, {len(columns)} columns")
+        
+        # Validate results
+        if not columns:
+            raise Exception("No columns detected in file")
+        if not data:
+            raise Exception("No data rows found in file")
+            
         return data, columns
+        
     except Exception as e:
+        print(f"❌ Error in read_file_data: {e}")
         raise Exception(f"Error reading file: {str(e)}")
 
 def find_best_matches(error_message, data, threshold=0.6):
@@ -476,42 +527,92 @@ def index():
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
-    if 'file' not in request.files:
-        return jsonify({'error': 'No file selected'}), 400
-    
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({'error': 'No file selected'}), 400
-    
-    if file and allowed_file(file.filename):
-        try:
-            # Generate unique session ID
-            if 'session_id' not in session:
-                session['session_id'] = str(uuid.uuid4())
+    try:
+        print("📁 Upload request received")
+        
+        # Check if file is in request
+        if 'file' not in request.files:
+            print("❌ No file in request")
+            return jsonify({'error': 'No file selected'}), 400
+        
+        file = request.files['file']
+        print(f"📄 File received: {file.filename}")
+        
+        if file.filename == '':
+            print("❌ Empty filename")
+            return jsonify({'error': 'No file selected'}), 400
+        
+        # Check file size
+        file.seek(0, 2)  # Seek to end
+        file_size = file.tell()
+        file.seek(0)  # Reset to beginning
+        print(f"📊 File size: {file_size} bytes")
+        
+        if file_size > app.config['MAX_CONTENT_LENGTH']:
+            return jsonify({'error': f'File too large. Maximum size is {app.config["MAX_CONTENT_LENGTH"]//1024//1024}MB'}), 400
+        
+        if file_size == 0:
+            return jsonify({'error': 'File is empty'}), 400
+        
+        if file and allowed_file(file.filename):
+            try:
+                print("✅ File type allowed, processing...")
+                
+                # Generate unique session ID
+                if 'session_id' not in session:
+                    session['session_id'] = str(uuid.uuid4())
+                
+                session_id = session['session_id']
+                print(f"🔑 Session ID: {session_id}")
+                
+                # Read the file data
+                print("📖 Reading file data...")
+                data, columns = read_file_data(file)
+                print(f"📊 Data read: {len(data)} rows, {len(columns)} columns")
+                print(f"📋 Columns: {columns}")
+                
+                # Validate that the file has at least 2 columns
+                if len(columns) < 2:
+                    return jsonify({'error': 'File must have at least 2 columns (Error Message and at least one Fix column)'}), 400
+                
+                # Validate data
+                if len(data) == 0:
+                    return jsonify({'error': 'File contains no data rows'}), 400
+                
+                # Store the data
+                uploaded_data[session_id] = data
+                print("✅ Data stored successfully")
+                
+                return jsonify({
+                    'success': True, 
+                    'message': f'File uploaded successfully! Found {len(data)} error records.',
+                    'columns': list(columns),
+                    'sample_data': data[:3] if len(data) >= 3 else data
+                })
+                
+            except ImportError as e:
+                print(f"❌ Import error: {e}")
+                if 'openpyxl' in str(e):
+                    return jsonify({'error': 'Excel support not available. Please install openpyxl or use CSV files.'}), 400
+                else:
+                    return jsonify({'error': f'Missing dependency: {str(e)}'}), 400
+                    
+            except Exception as e:
+                print(f"❌ Processing error: {e}")
+                error_msg = str(e)
+                if 'BadZipFile' in error_msg:
+                    return jsonify({'error': 'Invalid Excel file. Please check the file format.'}), 400
+                elif 'UnicodeDecodeError' in error_msg:
+                    return jsonify({'error': 'File encoding issue. Please save as UTF-8 CSV or check Excel file.'}), 400
+                else:
+                    return jsonify({'error': f'Error processing file: {error_msg}'}), 400
+        else:
+            print(f"❌ File type not allowed: {file.filename}")
+            return jsonify({'error': 'Invalid file type. Please upload CSV, XLS, or XLSX files.'}), 400
             
-            session_id = session['session_id']
-            
-            # Read the file data
-            data, columns = read_file_data(file)
-            
-            # Validate that the file has at least 2 columns
-            if len(columns) < 2:
-                return jsonify({'error': 'File must have at least 2 columns (Error Message and at least one Fix column)'}), 400
-            
-            # Store the data
-            uploaded_data[session_id] = data
-            
-            return jsonify({
-                'success': True, 
-                'message': f'File uploaded successfully! Found {len(data)} error records.',
-                'columns': list(columns),
-                'sample_data': data[:3] if len(data) >= 3 else data
-            })
-            
-        except Exception as e:
-            return jsonify({'error': f'Error processing file: {str(e)}'}), 400
-    
-    return jsonify({'error': 'Invalid file type. Please upload CSV, XLS, or XLSX files.'}), 400
+    except Exception as e:
+        print(f"❌ Upload route error: {e}")
+        return jsonify({'error': f'Upload failed: {str(e)}'}), 500
 
 @app.route('/chat', methods=['POST'])
 def chat():
@@ -573,6 +674,20 @@ def clear_session():
         del uploaded_data[session_id]
     session.clear()
     return jsonify({'success': True, 'message': 'Session cleared successfully'})
+
+@app.route('/test-upload', methods=['GET'])
+def test_upload():
+    """Test endpoint to check upload functionality"""
+    return jsonify({
+        'status': 'Upload endpoint is working',
+        'max_file_size': f"{app.config['MAX_CONTENT_LENGTH']//1024//1024}MB",
+        'allowed_extensions': ['csv', 'xls', 'xlsx'],
+        'openpyxl_available': True,
+        'session_info': {
+            'has_session': 'session_id' in session,
+            'session_id': session.get('session_id', 'None')
+        }
+    })
 
 @app.route('/unmatched-errors', methods=['GET'])
 def get_unmatched_errors():
