@@ -263,11 +263,16 @@ def read_file_data(file):
     """Read CSV or Excel file and return data as list of dictionaries"""
     try:
         if file.filename.lower().endswith('.csv'):
-            # Read CSV file
-            content = file.read().decode('utf-8')
+            # Read CSV file with encoding detection
+            try:
+                content = file.read().decode('utf-8')
+            except UnicodeDecodeError:
+                file.seek(0)  # Reset file pointer
+                content = file.read().decode('latin-1')
+            
             csv_reader = csv.DictReader(io.StringIO(content))
             data = list(csv_reader)
-            columns = csv_reader.fieldnames
+            columns = list(csv_reader.fieldnames) if csv_reader.fieldnames else []
         else:
             # Read Excel file
             from openpyxl import load_workbook
@@ -275,7 +280,8 @@ def read_file_data(file):
             sheet = workbook.active
             
             # Get headers from first row
-            columns = [cell.value for cell in sheet[1]]
+            columns = [str(cell.value) if cell.value is not None else f'Column_{i+1}' 
+                      for i, cell in enumerate(sheet[1])]
             
             # Get data rows
             data = []
@@ -284,7 +290,7 @@ def read_file_data(file):
                     row_dict = {}
                     for i, value in enumerate(row):
                         if i < len(columns) and columns[i]:
-                            row_dict[columns[i]] = value if value is not None else ''
+                            row_dict[columns[i]] = str(value) if value is not None else ''
                     data.append(row_dict)
         
         return data, columns
@@ -362,7 +368,19 @@ def find_best_matches(error_message, data, threshold=0.6):
 
 @app.route('/')
 def index():
-    return render_template('index.html')
+    try:
+        return render_template('index.html')
+    except UnicodeDecodeError as e:
+        # Handle encoding issues with template
+        logger.error(f"Template encoding error: {e}")
+        return """
+        <html><head><title>Bootcode Verification Chatbot</title></head>
+        <body style="font-family: Arial; padding: 20px; text-align: center;">
+        <h1>🔧 Bootcode Verification Chatbot</h1>
+        <p>Template encoding error detected. Please refresh the page.</p>
+        <p><a href="/">Refresh Page</a></p>
+        </body></html>
+        """, 500
 
 @app.route('/upload', methods=['POST'])
 def upload_file():

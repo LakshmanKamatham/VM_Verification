@@ -259,12 +259,6 @@
             font-size: 13px;
         }
 
-        .fix-content {
-            color: #495057;
-            line-height: 1.5;
-            font-size: 14px;
-        }
-
         .chat-input-section {
             padding: 20px;
             background: white;
@@ -322,7 +316,7 @@
             gap: 5px;
             color: #6c757d;
             font-style: italic;
-            padding: 10px 0;
+            padding: 10px 20px;
         }
 
         .typing-dots {
@@ -364,6 +358,34 @@
             padding: 40px 20px;
         }
 
+        .unmatched-info {
+            background: #fff3cd;
+            border: 1px solid #ffeaa7;
+            border-radius: 8px;
+            padding: 12px;
+            margin: 10px 0;
+            color: #856404;
+        }
+
+        .database-template {
+            background: #e3f2fd;
+            border: 1px solid #90caf9;
+            border-radius: 8px;
+            padding: 12px;
+            margin: 10px 0;
+            font-family: monospace;
+            font-size: 12px;
+        }
+
+        .follow-up-question {
+            background: #f3e5f5;
+            border: 1px solid #ce93d8;
+            border-radius: 8px;
+            padding: 12px;
+            margin: 10px 0;
+            color: #4a148c;
+        }
+
         @media (max-width: 768px) {
             .chat-container {
                 width: 95%;
@@ -385,7 +407,7 @@
 <body>
     <div class="chat-container">
         <div class="chat-header">
-            <h1>🔧 Bootcode Verification Assistant</h1>
+            <h1>Bootcode Verification Assistant</h1>
             <p>Upload your error database and get instant fix suggestions</p>
         </div>
 
@@ -394,7 +416,7 @@
                 <div class="file-input-wrapper">
                     <input type="file" id="fileInput" accept=".csv,.xls,.xlsx">
                     <label for="fileInput" class="file-input-label">
-                        📁 Choose Error Database
+                        Choose Error Database
                     </label>
                 </div>
                 <div class="file-status">
@@ -407,7 +429,7 @@
 
         <div class="chat-messages" id="chatMessages">
             <div class="welcome-message">
-                👋 Welcome! Please upload your error database (CSV/Excel) to start getting fix suggestions for your bootcode verification errors.
+                Welcome! Please upload your error database (CSV/Excel) to start getting fix suggestions for your bootcode verification errors.
                 <br><br>
                 <strong>Enhanced File Format:</strong>
                 <ul style="text-align: left; display: inline-block; margin: 10px 0;">
@@ -488,7 +510,10 @@
                     clearBtn.style.display = 'inline-block';
                     
                     // Add success message to chat
-                    addMessage('bot', `Database loaded successfully! I found ${result.message.match(/\d+/)[0]} error records. You can now ask me about any bootcode verification errors.`);
+                    const errorCount = result.message.match(/\d+/);
+                    if (errorCount) {
+                        addMessage('bot', `Database loaded successfully! I found ${errorCount[0]} error records. You can now ask me about any bootcode verification errors.`);
+                    }
                 } else {
                     uploadStatus.innerHTML = `<div class="upload-error">❌ ${result.error}</div>`;
                     fileUploaded = false;
@@ -560,6 +585,24 @@
             
             let html = `<div>${response.message}</div>`;
             
+            // Handle unmatched errors
+            if (response.unmatched) {
+                html += '<div class="unmatched-info">';
+                html += '<strong>💡 Suggestions for better results:</strong><ul>';
+                response.suggestions.forEach(suggestion => {
+                    html += `<li>${suggestion}</li>`;
+                });
+                html += '</ul></div>';
+                
+                if (response.database_template) {
+                    html += '<div class="database-template">';
+                    html += '<strong>📝 Template for adding this error to your database:</strong><br>';
+                    html += `<code>${response.database_template.suggested_format.csv_row}</code>`;
+                    html += '</div>';
+                }
+            }
+            
+            // Handle matches
             if (response.matches && response.matches.length > 0) {
                 response.matches.forEach((match, index) => {
                     const similarityPercent = Math.round(match.similarity * 100);
@@ -600,7 +643,16 @@
                 });
             }
             
-            if (response.suggestions) {
+            // Handle follow-up questions
+            if (response.follow_up) {
+                html += '<div class="follow-up-question">';
+                html += '<strong>🤔 Need clarification:</strong><br>';
+                html += response.follow_up.question.replace(/\n/g, '<br>');
+                html += '</div>';
+            }
+            
+            // Handle suggestions
+            if (response.suggestions && !response.unmatched) {
                 html += '<div style="margin-top: 15px;"><strong>💭 Suggestions:</strong><ul>';
                 response.suggestions.forEach(suggestion => {
                     html += `<li style="margin: 5px 0;">${suggestion}</li>`;
